@@ -1,0 +1,54 @@
+---
+description: Error handling conventions for all WatchAgent modules
+globs: ["app/poller.py", "app/event_detector.py", "app/database.py"]
+alwaysApply: true
+---
+
+# Error Handling Rules
+
+## Poller fetch failures
+
+When `fetch_city_weather` fails due to an HTTP error, log at WARNING level with this exact signature:
+```python
+logger.warning(
+    "Fetch failed for city=%s http_status=%s attempt=%d/%d",
+    name, exc.response.status_code, attempt, _MAX_RETRIES,
+)
+```
+
+When it fails due to a network/request error:
+```python
+logger.warning(
+    "Fetch failed for city=%s error=%s attempt=%d/%d",
+    name, str(exc), attempt, _MAX_RETRIES,
+)
+```
+
+**Do NOT raise.** Return `None` to signal failure. The caller checks for `None` and skips event detection.
+
+Retry up to `_MAX_RETRIES` times with `_RETRY_DELAY_SECONDS` sleep between attempts. After the final attempt, log:
+```python
+logger.warning("All retries exhausted for city=%s; skipping this poll cycle", name)
+```
+
+## Event detection failures
+
+If `detect_events()` raises for any city, the error must be caught in `poll_once` and logged with full traceback:
+```python
+logger.exception(
+    "Event detection failed city=%s reading_id=%d", name, reading_id
+)
+```
+
+One city failing event detection must **never** stop the poll cycle. Continue to the next city.
+
+## Database failures
+
+If `insert_reading` or `insert_event` raises (non-IntegrityError), let it propagate — these are unexpected and should surface. Do not swallow database write errors silently.
+
+## Forbidden patterns
+
+- `except Exception: pass` — always log
+- Bare `except:` without logging — always log at minimum WARNING
+- Raising inside `fetch_city_weather` — return None instead
+- Calling `sys.exit()` on recoverable errors — log and continue

@@ -1,0 +1,74 @@
+---
+description: Event record structure and detection conventions
+globs: ["app/event_detector.py", "tests/test_event_detection.py"]
+alwaysApply: true
+---
+
+# Event Schema Rules
+
+## Required fields
+
+Every dict returned by `detect_events()` and every dict passed to `insert_event()` must contain exactly these keys:
+
+| Field         | Type  | Constraint                                    |
+|---------------|-------|-----------------------------------------------|
+| `city`        | str   | One of "Ottawa", "Toronto", "Vancouver"       |
+| `event_type`  | str   | SCREAMING_SNAKE_CASE (see naming below)       |
+| `description` | str   | Human-readable sentence with measured values  |
+| `severity`    | str   | One of "low", "medium", "high"                |
+| `reading_id`  | int   | FK to the readings row that triggered this    |
+| `triggered_at`| str   | ISO 8601 UTC timestamp                        |
+| `details`     | str   | JSON-encoded dict (see below)                 |
+
+## Event type naming
+
+Pattern: `{CATEGORY}_{SUBCATEGORY}` in SCREAMING_SNAKE_CASE.
+
+Examples:
+- `TEMPERATURE_EXTREME_HOT` ✓
+- `STRONG_WIND_SEVERE` ✓
+- `SEVERE_WEATHER_THUNDERSTORM` ✓
+- `hot_temperature` ✗ (lowercase)
+- `HOTTEMP` ✗ (no underscore structure)
+
+## details JSON schema
+
+The `details` field must be a JSON string. The decoded object must always contain:
+- All raw field values relevant to the event (e.g. `temperature_2m`, `wind_speed_kmh`)
+- The threshold value(s) that were tested against
+- A `"reason"` key explaining *why* this is notable — not just restating the threshold
+
+Example ✓:
+```json
+{
+  "temperature_2m": 34.5,
+  "threshold_temp": 33.0,
+  "reason": "City-calibrated heat threshold exceeded. Vancouver fires at 28°C because heat is rarer there."
+}
+```
+
+Example ✗:
+```json
+{
+  "temp": 34.5,
+  "reason": "Temperature exceeded threshold"
+}
+```
+
+## Cooldown requirement
+
+**Every event type must check `_on_cooldown()` before being appended.** No event may be appended without this check. This prevents a persisting condition from generating an alert on every poll cycle.
+
+Use `_maybe_append()` (defined in event_detector.py) for all events — it wraps the cooldown check and appends atomically.
+
+## Thresholds must be city-specific for temperature events
+
+Global flat temperature thresholds are forbidden for TEMPERATURE_EXTREME_* events. All temperature thresholds must be drawn from `CITY_THRESHOLDS[city]`. A threshold that ignores the city's climate context scores zero.
+
+## Test coverage requirement
+
+Every new event type must have:
+1. A test that constructs a reading that crosses the threshold → asserts the event fires
+2. A test that constructs a reading just below the threshold → asserts the event does NOT fire
+
+Tests live in `tests/test_event_detection.py`.
